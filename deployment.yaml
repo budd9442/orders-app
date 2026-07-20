@@ -24,6 +24,11 @@ spec:
       - name: app
         image: orders-app:latest
         imagePullPolicy: IfNotPresent
+        env:
+        - name: RABBITMQ_HOST
+          value: "rabbitmq-prod.rabbitmq.svc.cluster.local"
+        - name: RABBITMQ_PORT
+          value: "5671"
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: false
