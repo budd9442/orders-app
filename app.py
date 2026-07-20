@@ -10,6 +10,11 @@ import ssl
 import uuid
 from prometheus_client import start_http_server, Counter
 
+try:
+    multiprocessing.set_start_method("spawn", force=True)
+except Exception:
+    pass
+
 rabbitmq_host = os.environ.get("RABBITMQ_HOST", "rabbitmq-prod.rabbitmq.svc.cluster.local")
 rabbitmq_port = int(os.environ.get("RABBITMQ_PORT", "5671"))
 rabbitmq_vhost = os.environ.get("RABBITMQ_VHOST", "vhost_orders")
@@ -36,7 +41,9 @@ def build_ssl_params():
         port=rabbitmq_port,
         virtual_host=rabbitmq_vhost,
         credentials=creds,
-        ssl_options=ssl_opts
+        ssl_options=ssl_opts,
+        connection_attempts=5,
+        retry_delay=2
     )
 
 def create_connection(name="Client"):
@@ -54,7 +61,7 @@ def create_connection(name="Client"):
     sys.exit(1)
 
 def publisher_process():
-    time.sleep(2)
+    time.sleep(5)
     pub_conn = create_connection("PUBLISHER")
     pub_chan = pub_conn.channel()
     pub_chan.confirm_delivery()
