@@ -7,6 +7,7 @@ import os
 import sys
 import threading
 import ssl
+from prometheus_client import start_http_server, Counter
 
 rabbitmq_host = os.environ.get("RABBITMQ_HOST", "rabbitmq-prod.rabbitmq.svc.cluster.local")
 rabbitmq_port = int(os.environ.get("RABBITMQ_PORT", "5671"))
@@ -19,6 +20,20 @@ redis_port = int(os.environ.get("REDIS_PORT", "6379"))
 ca_cert = os.path.join(cert_dir, "ca.crt")
 client_cert = os.path.join(cert_dir, "tls.crt")
 client_key = os.path.join(cert_dir, "tls.key")
+
+# Prometheus Metrics Exporter
+metrics_port = int(os.environ.get("METRICS_PORT", "8000"))
+try:
+    start_http_server(metrics_port)
+    print(f"Prometheus metrics HTTP server started on port {metrics_port}", flush=True)
+except Exception as me:
+    print(f"Failed to start Prometheus metrics server: {me}", flush=True)
+
+orders_processed_counter = Counter(
+    "orders_processed_total",
+    "Total number of order events processed by deduplicator",
+    ["status", "type"]
+)
 
 print(f"Connecting to Redis at {redis_host}:{redis_port}...", flush=True)
 redis_client = None
@@ -77,7 +92,7 @@ def publisher_loop():
     pub_chan.confirm_delivery()
     print("[PUBLISHER] Publisher connected to RabbitMQ over mTLS!", flush=True)
 
-    order_counter = 3000
+    order_counter = 4000
     recent_orders = []
 
     while True:
@@ -120,6 +135,7 @@ def callback(ch, method, properties, body):
     try:
         data = json.loads(body.decode())
         order_id = data.get("id")
+        order_type = data.get("type", "unknown")
 
         if not order_id:
             ch.basic_ack(delivery_tag=method.delivery_tag)
@@ -129,8 +145,10 @@ def callback(ch, method, properties, body):
         is_new = redis_client.set(f"dedup:order:{order_id}", "1", nx=True, ex=86400)
 
         if is_new:
-            print(f"[DEDUP: UNIQUE ORDER PROCESSED] Order ID: {order_id} (Type: {data.get('type')})", flush=True)
+            orders_processed_counter.labels(status="unique", type=order_type).inc()
+            print(f"[DEDUP: UNIQUE ORDER PROCESSED] Order ID: {order_id} (Type: {order_type})", flush=True)
         else:
+            orders_processed_counter.labels(status="duplicate", type=order_type).inc()
             print(f"[DEDUP: DUPLICATE DETECTED & SKIPPED] Order ID: {order_id} already exists in Redis!", flush=True)
 
         ch.basic_ack(delivery_tag=method.delivery_tag)
@@ -141,7 +159,7 @@ def callback(ch, method, properties, body):
 channel.basic_qos(prefetch_count=100)
 channel.basic_consume(queue="order_validation_q", on_message_callback=callback)
 
-print("Orders App listening on order_validation_q with Redis deduplication active!", flush=True)
+print("Orders App listening on order_validation_q with Redis deduplication and Prometheus metrics active!", flush=True)
 try:
     channel.start_consuming()
 except KeyboardInterrupt:

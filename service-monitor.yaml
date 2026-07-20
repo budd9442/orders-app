@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders-app-metrics
+  namespace: orders-system
+  labels:
+    app: orders-app
+spec:
+  selector:
+    app: orders-app
+  ports:
+  - name: metrics
+    port: 8000
+    targetPort: 8000
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: orders-app-monitor
+  namespace: orders-system
+  labels:
+    release: prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: orders-app
+  endpoints:
+  - port: metrics
+    interval: 15s
+    path: /metrics

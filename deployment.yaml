@@ -14,6 +14,10 @@ spec:
     metadata:
       labels:
         app: orders-app
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: orders-app-sa
       securityContext:
@@ -24,6 +28,9 @@ spec:
       - name: app
         image: orders-app:latest
         imagePullPolicy: IfNotPresent
+        ports:
+        - name: metrics
+          containerPort: 8000
         env:
         - name: RABBITMQ_HOST
           value: "rabbitmq-prod.rabbitmq.svc.cluster.local"
