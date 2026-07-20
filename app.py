@@ -52,78 +52,43 @@ if not redis_client:
     print("Could not connect to Redis. Exiting.", flush=True)
     sys.exit(1)
 
-def get_connection_parameters():
+def build_ssl_params():
     context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=ca_cert)
     context.check_hostname = False
     context.verify_mode = ssl.CERT_REQUIRED
     context.load_cert_chain(certfile=client_cert, keyfile=client_key)
 
-    ssl_options = pika.SSLOptions(context, server_hostname=rabbitmq_host)
-    credentials = pika.credentials.ExternalCredentials()
+    ssl_opts = pika.SSLOptions(context, server_hostname=rabbitmq_host)
+    creds = pika.credentials.ExternalCredentials()
 
     return pika.ConnectionParameters(
         host=rabbitmq_host,
         port=rabbitmq_port,
         virtual_host=rabbitmq_vhost,
-        credentials=credentials,
-        ssl_options=ssl_options,
-        connection_attempts=3,
-        retry_delay=2
+        credentials=creds,
+        ssl_options=ssl_opts,
+        connection_attempts=5,
+        retry_delay=3,
+        socket_timeout=10
     )
 
-def create_rabbitmq_connection(name="Connection"):
-    print(f"[{name}] Connecting to RabbitMQ at {rabbitmq_host}:{rabbitmq_port}/{rabbitmq_vhost} using mTLS certs...", flush=True)
-    for attempt in range(20):
+def create_connection(name="Client"):
+    print(f"[{name}] Connecting to RabbitMQ at {rabbitmq_host}:{rabbitmq_port}/{rabbitmq_vhost} over mTLS...", flush=True)
+    for attempt in range(30):
         try:
-            params = get_connection_parameters()
+            params = build_ssl_params()
             conn = pika.BlockingConnection(params)
             print(f"[{name}] Connected successfully over mTLS!", flush=True)
             return conn
         except Exception as e:
-            print(f"[{name}] Connection attempt {attempt+1} failed: {e}. Retrying in 3s...", flush=True)
-            time.sleep(3)
-    print(f"[{name}] Could not connect to RabbitMQ. Exiting.", flush=True)
+            print(f"[{name}] Connection attempt {attempt+1} failed: {repr(e)}. Retrying in 4s...", flush=True)
+            time.sleep(4)
+    print(f"[{name}] Could not establish connection. Exiting.", flush=True)
     sys.exit(1)
 
-def publisher_loop():
-    time.sleep(5)
-    pub_conn = create_rabbitmq_connection("PUBLISHER")
-    pub_chan = pub_conn.channel()
-    pub_chan.confirm_delivery()
-    print("[PUBLISHER] High-throughput continuous publisher ready!", flush=True)
-
-    order_counter = 0
-
-    while True:
-        try:
-            order_counter += 1
-            order_id = f"ORD-{uuid.uuid4().hex[:8]}-{order_counter}"
-            order_type = "digital" if order_counter % 2 == 0 else "physical"
-            payload = json.dumps({"id": order_id, "type": order_type, "timestamp": time.time()})
-
-            pub_chan.basic_publish(
-                exchange="order_events",
-                routing_key=f"order.{order_type}",
-                body=payload,
-                properties=pika.BasicProperties(content_type="application/json")
-            )
-            time.sleep(0.005)
-        except Exception as e:
-            print(f"[PUBLISHER] Publish error: {e}. Reconnecting...", flush=True)
-            time.sleep(2)
-            try:
-                pub_conn = create_rabbitmq_connection("PUBLISHER")
-                pub_chan = pub_conn.channel()
-                pub_chan.confirm_delivery()
-            except Exception:
-                pass
-
-pub_thread = threading.Thread(target=publisher_loop, daemon=True)
-pub_thread.start()
-
-# Main Consumer Loop
-connection = create_rabbitmq_connection("CONSUMER")
-channel = connection.channel()
+# Step 1: Establish Consumer Connection First
+consumer_conn = create_connection("CONSUMER")
+consumer_chan = consumer_conn.channel()
 
 processed_unique = 0
 processed_duplicate = 0
@@ -161,12 +126,49 @@ def callback(ch, method, properties, body):
         print(f"Callback error: {e}", flush=True)
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
-channel.basic_qos(prefetch_count=1000)
-channel.basic_consume(queue="order_validation_q", on_message_callback=callback)
+consumer_chan.basic_qos(prefetch_count=1000)
+consumer_chan.basic_consume(queue="order_validation_q", on_message_callback=callback)
+print("Orders Consumer listening on order_validation_q over mTLS!", flush=True)
 
-print("Orders App listening on order_validation_q with auto-retry mTLS connection active!", flush=True)
+# Step 2: Start Publisher Thread AFTER Consumer is connected
+def publisher_loop():
+    time.sleep(3)
+    pub_conn = create_connection("PUBLISHER")
+    pub_chan = pub_conn.channel()
+    pub_chan.confirm_delivery()
+    print("[PUBLISHER] High-throughput publisher connected over mTLS!", flush=True)
+
+    order_counter = 0
+
+    while True:
+        try:
+            order_counter += 1
+            order_id = f"ORD-{uuid.uuid4().hex[:8]}-{order_counter}"
+            order_type = "digital" if order_counter % 2 == 0 else "physical"
+            payload = json.dumps({"id": order_id, "type": order_type, "timestamp": time.time()})
+
+            pub_chan.basic_publish(
+                exchange="order_events",
+                routing_key=f"order.{order_type}",
+                body=payload,
+                properties=pika.BasicProperties(content_type="application/json")
+            )
+            time.sleep(0.005)
+        except Exception as e:
+            print(f"[PUBLISHER] Publish error: {e}. Reconnecting in 3s...", flush=True)
+            time.sleep(3)
+            try:
+                pub_conn = create_connection("PUBLISHER")
+                pub_chan = pub_conn.channel()
+                pub_chan.confirm_delivery()
+            except Exception:
+                pass
+
+pub_thread = threading.Thread(target=publisher_loop, daemon=True)
+pub_thread.start()
+
 try:
-    channel.start_consuming()
+    consumer_chan.start_consuming()
 except KeyboardInterrupt:
-    channel.stop_consuming()
-    connection.close()
+    consumer_chan.stop_consuming()
+    consumer_conn.close()
