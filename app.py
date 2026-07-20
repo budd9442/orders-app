@@ -25,7 +25,7 @@ context.verify_mode = ssl.CERT_REQUIRED
 context.load_cert_chain(certfile=client_cert, keyfile=client_key)
 
 ssl_options = pika.SSLOptions(context)
-credentials = pika.ExternalCredentials()
+credentials = pika.credentials.ExternalCredentials()
 
 parameters = pika.ConnectionParameters(
     host=host,
