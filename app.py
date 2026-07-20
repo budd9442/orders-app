@@ -7,6 +7,7 @@ import os
 import sys
 import threading
 import ssl
+import uuid
 from prometheus_client import start_http_server, Counter
 
 rabbitmq_host = os.environ.get("RABBITMQ_HOST", "rabbitmq-prod.rabbitmq.svc.cluster.local")
@@ -73,7 +74,7 @@ def get_connection_parameters():
 print(f"Connecting to RabbitMQ at {rabbitmq_host}:{rabbitmq_port}/{rabbitmq_vhost} using mTLS certs...", flush=True)
 
 def publisher_loop():
-    time.sleep(10)
+    time.sleep(5)
     pub_conn = None
     for attempt in range(10):
         try:
@@ -82,7 +83,7 @@ def publisher_loop():
             break
         except Exception as pe:
             print(f"[PUBLISHER] Connection attempt {attempt+1} failed: {pe}. Retrying...", flush=True)
-            time.sleep(3)
+            time.sleep(2)
 
     if not pub_conn:
         print("[PUBLISHER] Could not establish publisher connection.", flush=True)
@@ -90,27 +91,16 @@ def publisher_loop():
 
     pub_chan = pub_conn.channel()
     pub_chan.confirm_delivery()
-    print("[PUBLISHER] Publisher connected to RabbitMQ over mTLS!", flush=True)
+    print("[PUBLISHER] High-throughput continuous publisher started!", flush=True)
 
-    order_counter = 4000
-    recent_orders = []
+    order_counter = 0
 
     while True:
         try:
-            if len(recent_orders) >= 2 and random.random() < 0.5:
-                dup_id = random.choice(recent_orders)
-                order_type = "digital"
-                payload = json.dumps({"id": dup_id, "type": order_type, "timestamp": time.time(), "note": "intentional_duplicate"})
-                print(f"[PUBLISHER] Sending INTENTIONAL DUPLICATE event: {dup_id}", flush=True)
-            else:
-                order_counter += 1
-                order_id = f"ORD-{order_counter}"
-                order_type = random.choice(["digital", "physical"])
-                recent_orders.append(order_id)
-                if len(recent_orders) > 5:
-                    recent_orders.pop(0)
-                payload = json.dumps({"id": order_id, "type": order_type, "timestamp": time.time()})
-                print(f"[PUBLISHER] Sending NEW order event: {order_id} ({order_type})", flush=True)
+            order_counter += 1
+            order_id = f"ORD-{uuid.uuid4().hex[:8]}-{order_counter}"
+            order_type = "digital" if order_counter % 2 == 0 else "physical"
+            payload = json.dumps({"id": order_id, "type": order_type, "timestamp": time.time()})
 
             pub_chan.basic_publish(
                 exchange="order_events",
@@ -118,9 +108,11 @@ def publisher_loop():
                 body=payload,
                 properties=pika.BasicProperties(content_type="application/json")
             )
+            # High throughput stream (200 msgs/sec)
+            time.sleep(0.005)
         except Exception as e:
             print(f"[PUBLISHER] Publish error: {e}", flush=True)
-        time.sleep(4)
+            time.sleep(0.1)
 
 pub_thread = threading.Thread(target=publisher_loop, daemon=True)
 pub_thread.start()
@@ -131,7 +123,12 @@ connection = pika.BlockingConnection(params)
 channel = connection.channel()
 print("Orders Consumer connected successfully to RabbitMQ over mTLS!", flush=True)
 
+processed_unique = 0
+processed_duplicate = 0
+last_stats_time = time.time()
+
 def callback(ch, method, properties, body):
+    global processed_unique, processed_duplicate, last_stats_time
     try:
         data = json.loads(body.decode())
         order_id = data.get("id")
@@ -145,21 +142,28 @@ def callback(ch, method, properties, body):
         is_new = redis_client.set(f"dedup:order:{order_id}", "1", nx=True, ex=86400)
 
         if is_new:
+            processed_unique += 1
             orders_processed_counter.labels(status="unique", type=order_type).inc()
-            print(f"[DEDUP: UNIQUE ORDER PROCESSED] Order ID: {order_id} (Type: {order_type})", flush=True)
         else:
+            processed_duplicate += 1
             orders_processed_counter.labels(status="duplicate", type=order_type).inc()
-            print(f"[DEDUP: DUPLICATE DETECTED & SKIPPED] Order ID: {order_id} already exists in Redis!", flush=True)
+            print(f"⚠️ [NATURAL DUPLICATE DETECTED!] Order ID: {order_id} was naturally re-delivered or duplicated!", flush=True)
+
+        now = time.time()
+        if now - last_stats_time >= 5.0:
+            rate = (processed_unique + processed_duplicate) / (now - last_stats_time)
+            print(f"📊 [HIGH-THROUGHPUT STATS] Throughput: {rate:.1f} msg/s | Unique: {processed_unique} | Natural Duplicates: {processed_duplicate}", flush=True)
+            last_stats_time = now
 
         ch.basic_ack(delivery_tag=method.delivery_tag)
     except Exception as e:
         print(f"Callback error: {e}", flush=True)
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
-channel.basic_qos(prefetch_count=100)
+channel.basic_qos(prefetch_count=1000)
 channel.basic_consume(queue="order_validation_q", on_message_callback=callback)
 
-print("Orders App listening on order_validation_q with Redis deduplication and Prometheus metrics active!", flush=True)
+print("Orders App listening on order_validation_q at MAXIMUM THROUGHPUT with Redis deduplication monitoring active!", flush=True)
 try:
     channel.start_consuming()
 except KeyboardInterrupt:
