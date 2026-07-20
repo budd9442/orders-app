@@ -28,7 +28,7 @@ def build_ssl_params():
     context.verify_mode = ssl.CERT_REQUIRED
     context.load_cert_chain(certfile=client_cert, keyfile=client_key)
 
-    ssl_opts = pika.SSLOptions(context, server_hostname=rabbitmq_host)
+    ssl_opts = pika.SSLOptions(context)
     creds = pika.credentials.ExternalCredentials()
 
     return pika.ConnectionParameters(
@@ -36,10 +36,7 @@ def build_ssl_params():
         port=rabbitmq_port,
         virtual_host=rabbitmq_vhost,
         credentials=creds,
-        ssl_options=ssl_opts,
-        connection_attempts=10,
-        retry_delay=3,
-        socket_timeout=10
+        ssl_options=ssl_opts
     )
 
 def create_connection(name="Client"):
@@ -51,14 +48,13 @@ def create_connection(name="Client"):
             print(f"[{name}] Connected successfully over mTLS!", flush=True)
             return conn
         except Exception as e:
-            print(f"[{name}] Connection attempt {attempt+1} failed: {repr(e)}. Retrying in 4s...", flush=True)
-            time.sleep(4)
+            print(f"[{name}] Connection attempt {attempt+1} failed: {repr(e)}. Retrying in 2s...", flush=True)
+            time.sleep(2)
     print(f"[{name}] Could not establish connection. Exiting.", flush=True)
     sys.exit(1)
 
 def publisher_process():
-    # Stagger publisher startup by 6 seconds to avoid mTLS handshake collision
-    time.sleep(6)
+    time.sleep(2)
     pub_conn = create_connection("PUBLISHER")
     pub_chan = pub_conn.channel()
     pub_chan.confirm_delivery()
@@ -81,8 +77,8 @@ def publisher_process():
             )
             time.sleep(0.005)
         except Exception as e:
-            print(f"[PUBLISHER] Publish error: {e}. Reconnecting in 3s...", flush=True)
-            time.sleep(3)
+            print(f"[PUBLISHER] Publish error: {e}. Reconnecting in 2s...", flush=True)
+            time.sleep(2)
             try:
                 pub_conn = create_connection("PUBLISHER")
                 pub_chan = pub_conn.channel()
