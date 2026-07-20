@@ -6,7 +6,7 @@ metadata:
   annotations:
     secret.reloader.stakater.com/reload: "rabbitmq-client-cert"
 spec:
-  replicas: 1
+  replicas: 3
   selector:
     matchLabels:
       app: orders-app
@@ -40,6 +40,17 @@ spec:
           value: "redis-orders.orders-system.svc.cluster.local"
         - name: REDIS_PORT
           value: "6379"
+        - name: NUM_CONSUMERS
+          value: "4"
+        - name: NUM_PUBLISHERS
+          value: "4"
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "256Mi"
+          limits:
+            cpu: "2"
+            memory: "1Gi"
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: false
