@@ -29,6 +29,10 @@ spec:
           value: "rabbitmq-prod.rabbitmq.svc.cluster.local"
         - name: RABBITMQ_PORT
           value: "5671"
+        - name: REDIS_HOST
+          value: "redis-orders.orders-system.svc.cluster.local"
+        - name: REDIS_PORT
+          value: "6379"
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: false
