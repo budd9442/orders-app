@@ -51,13 +51,14 @@ def create_connection(name="Client"):
             print(f"[{name}] Connected successfully over mTLS!", flush=True)
             return conn
         except Exception as e:
-            print(f"[{name}] Connection attempt {attempt+1} failed: {repr(e)}. Retrying in 3s...", flush=True)
-            time.sleep(3)
+            print(f"[{name}] Connection attempt {attempt+1} failed: {repr(e)}. Retrying in 4s...", flush=True)
+            time.sleep(4)
     print(f"[{name}] Could not establish connection. Exiting.", flush=True)
     sys.exit(1)
 
 def publisher_process():
-    time.sleep(3)
+    # Stagger publisher startup by 6 seconds to avoid mTLS handshake collision
+    time.sleep(6)
     pub_conn = create_connection("PUBLISHER")
     pub_chan = pub_conn.channel()
     pub_chan.confirm_delivery()
@@ -90,7 +91,6 @@ def publisher_process():
                 pass
 
 if __name__ == "__main__":
-    # Start Prometheus Metrics Exporter
     metrics_port = int(os.environ.get("METRICS_PORT", "8000"))
     try:
         start_http_server(metrics_port)
@@ -120,11 +120,7 @@ if __name__ == "__main__":
         print("Could not connect to Redis. Exiting.", flush=True)
         sys.exit(1)
 
-    # Start Isolated Publisher Process
-    pub_proc = multiprocessing.Process(target=publisher_process, daemon=True)
-    pub_proc.start()
-
-    # Consumer Loop in Main Process
+    # Step 1: Connect Consumer FIRST in Main Process
     consumer_conn = create_connection("CONSUMER")
     consumer_chan = consumer_conn.channel()
 
@@ -167,6 +163,10 @@ if __name__ == "__main__":
     consumer_chan.basic_qos(prefetch_count=1000)
     consumer_chan.basic_consume(queue="order_validation_q", on_message_callback=callback)
     print("Orders Consumer registered & listening on order_validation_q over mTLS!", flush=True)
+
+    # Step 2: Start Publisher Process AFTER Consumer is registered
+    pub_proc = multiprocessing.Process(target=publisher_process, daemon=True)
+    pub_proc.start()
 
     try:
         consumer_chan.start_consuming()
