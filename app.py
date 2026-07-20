@@ -58,7 +58,7 @@ def get_connection_parameters():
 print(f"Connecting to RabbitMQ at {rabbitmq_host}:{rabbitmq_port}/{rabbitmq_vhost} using mTLS certs...", flush=True)
 
 def publisher_loop():
-    time.sleep(3)
+    time.sleep(10)
     pub_conn = None
     for attempt in range(10):
         try:
