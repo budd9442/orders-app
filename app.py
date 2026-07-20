@@ -41,7 +41,7 @@ def build_ssl_params():
         virtual_host=rabbitmq_vhost,
         credentials=creds,
         ssl_options=ssl_opts,
-        connection_attempts=10,
+        connection_attempts=15,
         retry_delay=2,
         socket_timeout=10
     )
@@ -60,7 +60,7 @@ def create_connection(name="Client"):
     sys.exit(1)
 
 def publisher_worker(worker_id):
-    time.sleep(1 + worker_id * 0.3)
+    time.sleep(0.2 + (worker_id % 8) * 0.2)
     pub_conn = create_connection(f"PUB-{worker_id}")
     pub_chan = pub_conn.channel()
     print(f"[PUB-{worker_id}] High-throughput publisher worker active!", flush=True)
@@ -90,14 +90,14 @@ def publisher_worker(worker_id):
                 pass
 
 def consumer_worker(worker_id, shared_unique, shared_duplicate):
-    time.sleep(0.5 + worker_id * 0.3)
+    time.sleep(0.1 + (worker_id % 8) * 0.2)
     
-    pool = redis.ConnectionPool(host=redis_host, port=redis_port, decode_responses=True)
+    pool = redis.ConnectionPool(host=redis_host, port=redis_port, decode_responses=True, max_connections=50)
     r = redis.Redis(connection_pool=pool)
 
     cons_conn = create_connection(f"CONS-{worker_id}")
     cons_chan = cons_conn.channel()
-    cons_chan.basic_qos(prefetch_count=500)
+    cons_chan.basic_qos(prefetch_count=1000)
 
     def callback(ch, method, properties, body):
         try:
@@ -138,8 +138,8 @@ if __name__ == "__main__":
     shared_unique = multiprocessing.Value("i", 0)
     shared_duplicate = multiprocessing.Value("i", 0)
 
-    num_consumers = int(os.environ.get("NUM_CONSUMERS", "4"))
-    num_publishers = int(os.environ.get("NUM_PUBLISHERS", "4"))
+    num_consumers = int(os.environ.get("NUM_CONSUMERS", "16"))
+    num_publishers = int(os.environ.get("NUM_PUBLISHERS", "16"))
 
     print(f"Starting {num_consumers} consumers and {num_publishers} publishers...", flush=True)
 
@@ -177,7 +177,7 @@ if __name__ == "__main__":
             orders_processed_counter.labels(status="duplicate", type="physical").inc(delta_d // 2)
 
         rate = (delta_u + delta_d) / elapsed if elapsed > 0 else 0
-        print(f"🚀 [HIGH-THROUGHPUT SYSTEM STATS] Rate: {rate:.1f} msg/s | Total Unique: {curr_u} | Total Duplicates: {curr_d}", flush=True)
+        print(f"🚀 [ULTRA-HIGH THROUGHPUT SYSTEM STATS] Rate: {rate:.1f} msg/s | Total Unique: {curr_u} | Total Duplicates: {curr_d}", flush=True)
 
         last_u = curr_u
         last_d = curr_d
