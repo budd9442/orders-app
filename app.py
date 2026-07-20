@@ -8,6 +8,7 @@ import sys
 import multiprocessing
 import ssl
 import uuid
+import traceback
 from prometheus_client import start_http_server, Counter
 
 try:
@@ -42,26 +43,41 @@ def build_ssl_params():
         virtual_host=rabbitmq_vhost,
         credentials=creds,
         ssl_options=ssl_opts,
-        connection_attempts=5,
-        retry_delay=2
+        connection_attempts=1,
+        socket_timeout=10
     )
 
 def create_connection(name="Client"):
-    print(f"[{name}] Connecting to RabbitMQ at {rabbitmq_host}:{rabbitmq_port}/{rabbitmq_vhost} over mTLS...", flush=True)
-    for attempt in range(30):
+    print(f"[{name}] Starting connection to {rabbitmq_host}:{rabbitmq_port}/{rabbitmq_vhost}...", flush=True)
+    
+    # Debug cert files
+    print(f"[{name}] Certificate check in {cert_dir}:", flush=True)
+    for f in ["ca.crt", "tls.crt", "tls.key"]:
+        p = os.path.join(cert_dir, f)
+        exists = os.path.exists(p)
+        size = os.path.getsize(p) if exists else 0
+        print(f"[{name}]   - {f}: exists={exists}, size={size} bytes", flush=True)
+
+    for attempt in range(1, 31):
         try:
+            print(f"[{name}] [Attempt {attempt}] Building SSL parameters...", flush=True)
             params = build_ssl_params()
+            print(f"[{name}] [Attempt {attempt}] Calling pika.BlockingConnection...", flush=True)
+            t0 = time.time()
             conn = pika.BlockingConnection(params)
-            print(f"[{name}] Connected successfully over mTLS!", flush=True)
+            t1 = time.time()
+            print(f"[{name}] [Attempt {attempt}] SUCCESS in {t1-t0:.2f}s! Connection open: {conn.is_open}", flush=True)
             return conn
         except Exception as e:
-            print(f"[{name}] Connection attempt {attempt+1} failed: {repr(e)}. Retrying in 2s...", flush=True)
-            time.sleep(2)
-    print(f"[{name}] Could not establish connection. Exiting.", flush=True)
+            print(f"[{name}] [Attempt {attempt}] FAILED! Exception: {type(e).__name__} -> {repr(e)}", flush=True)
+            print(f"[{name}] [Attempt {attempt}] Full Traceback:\n{traceback.format_exc()}", flush=True)
+            time.sleep(3)
+            
+    print(f"[{name}] Exhausted all connection attempts. Exiting.", flush=True)
     sys.exit(1)
 
 def publisher_process():
-    time.sleep(5)
+    time.sleep(4)
     pub_conn = create_connection("PUBLISHER")
     pub_chan = pub_conn.channel()
     pub_chan.confirm_delivery()
@@ -84,8 +100,8 @@ def publisher_process():
             )
             time.sleep(0.005)
         except Exception as e:
-            print(f"[PUBLISHER] Publish error: {e}. Reconnecting in 2s...", flush=True)
-            time.sleep(2)
+            print(f"[PUBLISHER] Publish error: {e}. Reconnecting in 3s...", flush=True)
+            time.sleep(3)
             try:
                 pub_conn = create_connection("PUBLISHER")
                 pub_chan = pub_conn.channel()
@@ -94,19 +110,6 @@ def publisher_process():
                 pass
 
 if __name__ == "__main__":
-    metrics_port = int(os.environ.get("METRICS_PORT", "8000"))
-    try:
-        start_http_server(metrics_port)
-        print(f"Prometheus metrics HTTP server started on port {metrics_port}", flush=True)
-    except Exception as me:
-        print(f"Failed to start Prometheus metrics server: {me}", flush=True)
-
-    orders_processed_counter = Counter(
-        "orders_processed_total",
-        "Total number of order events processed by deduplicator",
-        ["status", "type"]
-    )
-
     print(f"Connecting to Redis at {redis_host}:{redis_port}...", flush=True)
     redis_client = None
     for attempt in range(15):
@@ -123,9 +126,23 @@ if __name__ == "__main__":
         print("Could not connect to Redis. Exiting.", flush=True)
         sys.exit(1)
 
-    # Step 1: Connect Consumer FIRST in Main Process
+    # Step 1: Connect Consumer FIRST
     consumer_conn = create_connection("CONSUMER")
     consumer_chan = consumer_conn.channel()
+
+    # Step 2: Start Prometheus Metrics Exporter AFTER mTLS Connection
+    metrics_port = int(os.environ.get("METRICS_PORT", "8000"))
+    try:
+        start_http_server(metrics_port)
+        print(f"Prometheus metrics HTTP server started on port {metrics_port}", flush=True)
+    except Exception as me:
+        print(f"Failed to start Prometheus metrics server: {me}", flush=True)
+
+    orders_processed_counter = Counter(
+        "orders_processed_total",
+        "Total number of order events processed by deduplicator",
+        ["status", "type"]
+    )
 
     processed_unique = 0
     processed_duplicate = 0
@@ -167,7 +184,7 @@ if __name__ == "__main__":
     consumer_chan.basic_consume(queue="order_validation_q", on_message_callback=callback)
     print("Orders Consumer registered & listening on order_validation_q over mTLS!", flush=True)
 
-    # Step 2: Start Publisher Process AFTER Consumer is registered
+    # Step 3: Start Publisher Process
     pub_proc = multiprocessing.Process(target=publisher_process, daemon=True)
     pub_proc.start()
 
