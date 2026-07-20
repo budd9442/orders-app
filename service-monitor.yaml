@@ -4,7 +4,7 @@ metadata:
   name: orders-app-metrics
   namespace: orders-system
   labels:
-    app: orders-app
+    app.kubernetes.io/name: orders-app-metrics
 spec:
   selector:
     app: orders-app
@@ -23,8 +23,8 @@ metadata:
 spec:
   selector:
     matchLabels:
-      app: orders-app
+      app.kubernetes.io/name: orders-app-metrics
   endpoints:
   - port: metrics
-    interval: 15s
+    interval: 5s
     path: /metrics
